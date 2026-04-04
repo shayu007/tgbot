@@ -4,7 +4,7 @@ import os
 from datetime import datetime, timedelta
 
 # 你的机器人Token
-BOT_TOKEN = "8756349976:AAGWdUy9-c3aSh6RsHe8JGeww2YOFX4dl74"
+BOT_TOKEN = "875634997:AAGWdUy9-c3aSh6RsHe8JGeww2YOFX4dl74"
 bot = telebot.TeleBot(BOT_TOKEN, parse_mode="HTML")
 
 # 数据文件（永久保存，重启不丢）
@@ -15,12 +15,18 @@ ADMIN_FILE = "admins.json"
 def beijing_time():
     return (datetime.utcnow() + timedelta(hours=8)).strftime("%Y-%m-%d %H:%M:%S")
 
+# 初始化空文件（避免首次运行报错）
+if not os.path.exists(DATA_FILE):
+    with open(DATA_FILE, "w", encoding="utf-8") as f:
+        json.dump({}, f)
+if not os.path.exists(ADMIN_FILE):
+    with open(ADMIN_FILE, "w", encoding="utf-8") as f:
+        json.dump(["72406269073"], f)  # 你的主管理员ID
+
 # 加载/保存订单
 def load_orders():
-    if os.path.exists(DATA_FILE):
-        with open(DATA_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    return {}
+    with open(DATA_FILE, "r", encoding="utf-8") as f:
+        return json.load(f)
 
 def save_orders(data):
     with open(DATA_FILE, "w", encoding="utf-8") as f:
@@ -28,11 +34,8 @@ def save_orders(data):
 
 # 加载/保存管理员
 def load_admins():
-    if os.path.exists(ADMIN_FILE):
-        with open(ADMIN_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    # 你的主账号ID
-    return ["72406269073"]
+    with open(ADMIN_FILE, "r", encoding="utf-8") as f:
+        return json.load(f)
 
 def save_admins(data):
     with open(ADMIN_FILE, "w", encoding="utf-8") as f:
@@ -128,10 +131,10 @@ def handle_text(message):
             bot.send_message(message.chat.id, "❌ 未找到该手机号的订单")
         else:
             for order in result:
-                kb = InlineKeyboardMarkup(row_width=2)
+                kb = telebot.types.InlineKeyboardMarkup(row_width=2)
                 kb.add(
-                    InlineKeyboardButton("✅ 标记完成", callback_data=f"done_{order['id']}"),
-                    InlineKeyboardButton("🗑️ 删除", callback_data=f"del_{order['id']}")
+                    telebot.types.InlineKeyboardButton("✅ 标记完成", callback_data=f"done_{order['id']}"),
+                    telebot.types.InlineKeyboardButton("🗑️ 删除", callback_data=f"del_{order['id']}")
                 )
                 bot.send_message(
                     message.chat.id,
@@ -191,10 +194,10 @@ def callback(call):
             )
             return
         for order in orders.values():
-            kb = InlineKeyboardMarkup(row_width=2)
+            kb = telebot.types.InlineKeyboardMarkup(row_width=2)
             kb.add(
-                InlineKeyboardButton("✅ 标记完成", callback_data=f"done_{order['id']}"),
-                InlineKeyboardButton("🗑️ 删除", callback_data=f"del_{order['id']}")
+                telebot.types.InlineKeyboardButton("✅ 标记完成", callback_data=f"done_{order['id']}"),
+                telebot.types.InlineKeyboardButton("🗑️ 删除", callback_data=f"del_{order['id']}")
             )
             bot.send_message(
                 call.message.chat.id,
@@ -212,10 +215,10 @@ def callback(call):
             )
             return
         for order in orders.values():
-            kb = InlineKeyboardMarkup(row_width=2)
+            kb = telebot.types.InlineKeyboardMarkup(row_width=2)
             kb.add(
-                InlineKeyboardButton("✅ 标记完成", callback_data=f"done_{order['id']}"),
-                InlineKeyboardButton("🗑️ 删除", callback_data=f"del_{order['id']}")
+                telebot.types.InlineKeyboardButton("✅ 标记完成", callback_data=f"done_{order['id']}"),
+                telebot.types.InlineKeyboardButton("🗑️ 删除", callback_data=f"del_{order['id']}")
             )
             bot.send_message(
                 call.message.chat.id,
@@ -247,5 +250,5 @@ def callback(call):
 
 # 启动机器人
 if __name__ == "__main__":
-    print("机器人启动成功，7×24小时在线运行...")
+    print("✅ 订单机器人启动成功，7×24小时在线运行...")
     bot.infinity_polling()
