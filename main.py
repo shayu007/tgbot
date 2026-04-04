@@ -1,273 +1,251 @@
-from flask import Flask
-from threading import Thread
-import time
 import telebot
-from telebot import types
+import json
 import os
+from datetime import datetime, timedelta
 
-print("=" * 50)
-print("🚀 投稿机器人启动中...（Railway + 菜单管理目标群）")
-print("=" * 50)
+# 你的机器人Token
+BOT_TOKEN = "8756349976:AAGWdUy9-c3aSh6RsHe8JGeww2YOFX4dl74"
+bot = telebot.TeleBot(BOT_TOKEN, parse_mode="HTML")
 
-app = Flask(__name__)
+# 数据文件（永久保存，重启不丢）
+DATA_FILE = "orders.json"
+ADMIN_FILE = "admins.json"
 
-@app.route('/')
-def home():
-    return "✅ Bot is running 24/7 on Railway!"
+# 北京时间
+def beijing_time():
+    return (datetime.utcnow() + timedelta(hours=8)).strftime("%Y-%m-%d %H:%M:%S")
 
-def run_web():
-    port = int(os.environ.get("PORT", 8080))
-    app.run(host="0.0.0.0", port=port, debug=False)
+# 加载/保存订单
+def load_orders():
+    if os.path.exists(DATA_FILE):
+        with open(DATA_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    return {}
 
-# ================== 配置 ==================
-BOT_TOKEN = "8640961726:AAEtYBHxk_y_TzfNENGxd_flCpcIQd8hVnU"
-REVIEW_GROUP_ID = -1003839457254
-ADMIN_ID = 2120267316
+def save_orders(data):
+    with open(DATA_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
 
-# 优先从 Railway 环境变量读取（推荐方式）
-TARGET_CHANNEL_ID = os.environ.get("TARGET_CHANNEL_ID")
-if TARGET_CHANNEL_ID:
-    try:
-        TARGET_CHANNEL_ID = int(TARGET_CHANNEL_ID)
-        print(f"✅ 从环境变量加载目标群: {TARGET_CHANNEL_ID}")
-    except:
-        TARGET_CHANNEL_ID = None
-else:
-    TARGET_CHANNEL_ID = None
+# 加载/保存管理员
+def load_admins():
+    if os.path.exists(ADMIN_FILE):
+        with open(ADMIN_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    # 你的主账号ID
+    return ["72406269073"]
 
-bot = telebot.TeleBot(BOT_TOKEN, skip_pending=True)
-user_data = {}
+def save_admins(data):
+    with open(ADMIN_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
 
-# ================== 设置菜单（仅管理员可用） ==================
-@bot.message_handler(commands=['settings'])
-def settings_menu(message):
-    if message.from_user.id != ADMIN_ID:
-        bot.send_message(message.chat.id, "❌ 你没有权限使用设置菜单")
-        return
-
-    mk = types.InlineKeyboardMarkup(row_width=1)
-    mk.add(types.InlineKeyboardButton("📍 查看当前目标群", callback_data="view_target"))
-    mk.add(types.InlineKeyboardButton("✏️ 设置新目标群ID", callback_data="set_target"))
-
-    current = TARGET_CHANNEL_ID if TARGET_CHANNEL_ID else "未设置"
-    text = (
-        f"⚙️ **目标群管理菜单**\n\n"
-        f"当前发布目标群/频道：\n"
-        f"`{current}`\n\n"
-        f"• 设置后，审核通过会自动发布到该群\n"
-        f"• 推荐在 Railway 添加环境变量 `TARGET_CHANNEL_ID`（更稳定）"
+# 主菜单按钮
+def main_menu():
+    from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
+    kb = InlineKeyboardMarkup(row_width=2)
+    kb.add(
+        InlineKeyboardButton("📥 提交订单", callback_data="submit"),
+        InlineKeyboardButton("🔍 查询手机号", callback_data="query"),
+        InlineKeyboardButton("📋 所有订单", callback_data="all"),
+        InlineKeyboardButton("⚙️ 管理订单", callback_data="manage")
     )
+    return kb
 
-    bot.send_message(message.chat.id, text, parse_mode="Markdown", reply_markup=mk)
+# 等待输入状态
+wait_add_admin = {}
+wait_remove_admin = {}
+wait_query_phone = {}
 
-# 查看当前目标群
-@bot.callback_query_handler(func=lambda c: c.data == "view_target")
-def view_target(c):
-    if c.from_user.id != ADMIN_ID:
-        return
-    current = TARGET_CHANNEL_ID if TARGET_CHANNEL_ID else "未设置"
-    bot.answer_callback_query(c.id)
-    bot.send_message(c.message.chat.id, f"📍 当前目标群ID：\n`{current}`", parse_mode="Markdown")
-
-# 开始设置新目标群
-@bot.callback_query_handler(func=lambda c: c.data == "set_target")
-def start_set_target(c):
-    if c.from_user.id != ADMIN_ID:
-        return
-    bot.answer_callback_query(c.id)
-    bot.send_message(
-        c.message.chat.id,
-        "请输入新的**目标群/频道 ID**（必须以 -100 开头）：\n\n"
-        "示例：`-1001234567890`\n"
-        "发送 /cancel 取消设置"
-    )
-    user_data[c.from_user.id] = {"step": "waiting_target_id"}
-
-# 处理输入的目标群ID
-@bot.message_handler(func=lambda m: m.from_user.id == ADMIN_ID and user_data.get(m.from_user.id, {}).get("step") == "waiting_target_id")
-def set_target_id(message):
-    global TARGET_CHANNEL_ID
-    try:
-        new_id = int(message.text.strip())
-        if not str(new_id).startswith("-100"):
-            bot.send_message(message.chat.id, "❌ 错误！目标群ID必须以 `-100` 开头，请重新输入。")
-            return
-
-        TARGET_CHANNEL_ID = new_id
-        bot.send_message(
-            message.chat.id,
-            f"✅ 设置成功！\n\n新目标群ID：`{new_id}`\n\n"
-            f"审核通过后将自动发布到此群。\n"
-            f"注意：Railway 重启后会恢复为环境变量的值。\n"
-            f"建议直接在 Railway Variables 中添加 `TARGET_CHANNEL_ID` = `{new_id}`",
-            parse_mode="Markdown"
-        )
-        del user_data[message.from_user.id]
-
-    except ValueError:
-        bot.send_message(message.chat.id, "❌ 输入格式错误，请输入纯数字（如 -1001234567890）")
-
-# ================== 投稿流程（简化稳定版） ==================
-@bot.message_handler(commands=['start', 'post'])
+# /start 命令
+@bot.message_handler(commands=["start"])
 def start(message):
-    user_id = message.from_user.id
-    user_data[user_id] = {"step": "anon"}
+    bot.send_message(
+        message.chat.id,
+        "✅ 订单管理机器人已启动！\n请选择功能：",
+        reply_markup=main_menu()
+    )
 
-    mk = types.InlineKeyboardMarkup(row_width=1)
-    mk.add(types.InlineKeyboardButton("🕵 匿名投稿", callback_data="anon_yes"))
-    mk.add(types.InlineKeyboardButton("🔍 实名投稿", callback_data="anon_no"))
-    bot.send_message(message.chat.id, "👋 欢迎使用投稿机器人！\n\n请选择投稿方式：", reply_markup=mk)
+# /myid 命令
+@bot.message_handler(commands=["myid"])
+def myid(message):
+    bot.send_message(message.chat.id, f"你的ID：`{message.chat.id}`", parse_mode="Markdown")
 
-@bot.callback_query_handler(func=lambda c: c.data.startswith("anon_"))
-def set_anon(c):
-    user_id = c.from_user.id
-    user_data[user_id]["anon"] = (c.data == "anon_yes")
-    user_data[user_id]["step"] = "gender"
-    bot.send_message(c.message.chat.id, "请输入你的**性别**：")
-
-@bot.message_handler(content_types=['text'])
-def text_step(message):
-    user_id = message.from_user.id
-    if user_id not in user_data:
+# /addadmin 命令
+@bot.message_handler(commands=["addadmin"])
+def addadmin(message):
+    admins = load_admins()
+    if str(message.chat.id) not in admins:
+        bot.send_message(message.chat.id, "❌ 你没有管理员权限")
         return
-    step = user_data[user_id].get("step")
+    wait_add_admin[str(message.chat.id)] = True
+    bot.send_message(message.chat.id, "👤 请发送要添加的管理员ID")
+
+# /removeadmin 命令
+@bot.message_handler(commands=["removeadmin"])
+def removeadmin(message):
+    admins = load_admins()
+    if str(message.chat.id) not in admins:
+        bot.send_message(message.chat.id, "❌ 你没有管理员权限")
+        return
+    wait_remove_admin[str(message.chat.id)] = True
+    bot.send_message(message.chat.id, "👤 请发送要移除的管理员ID")
+
+# 处理文本消息
+@bot.message_handler(func=lambda message: True)
+def handle_text(message):
+    cid = str(message.chat.id)
     text = message.text.strip()
+    admins = load_admins()
 
-    if step == "gender":
-        user_data[user_id]["gender"] = text
-        user_data[user_id]["step"] = "age"
-        bot.send_message(message.chat.id, "请输入你的**年龄**：")
-    elif step == "age":
-        user_data[user_id]["age"] = text
-        user_data[user_id]["step"] = "attr"
-        bot.send_message(message.chat.id, "请输入你的**属性**：")
-    elif step == "attr":
-        user_data[user_id]["attr"] = text
-        user_data[user_id]["step"] = "city"
-        bot.send_message(message.chat.id, "请输入你的**地区**：")
-    elif step == "city":
-        user_data[user_id]["city"] = text
-        user_data[user_id]["step"] = "media"
-        user_data[user_id]["media"] = []
-        bot.send_message(message.chat.id, "✅ 信息填写完成！\n现在发送图片或视频（可多条），全部发完后输入**投稿宣言**：")
-    elif step == "declaration":
-        user_data[user_id]["declaration"] = text
-        user_data[user_id]["step"] = "confirm"
-        mk = types.InlineKeyboardMarkup()
-        mk.add(types.InlineKeyboardButton("✅ 提交审核", callback_data="done"))
-        bot.send_message(message.chat.id, "✅ 宣言已记录！点击下方按钮提交审核。", reply_markup=mk)
-
-@bot.message_handler(content_types=['photo', 'video'])
-def catch_media(message):
-    user_id = message.from_user.id
-    if user_id not in user_data or user_data[user_id].get("step") != "media":
-        return
-    if "media" not in user_data[user_id]:
-        user_data[user_id]["media"] = []
-    user_data[user_id]["media"].append(message)
-    bot.send_message(message.chat.id, f"✅ 已接收第 {len(user_data[user_id]['media'])} 个媒体\n继续发送或直接输入投稿宣言：")
-
-# ================== 提交审核 ==================
-@bot.callback_query_handler(func=lambda c: c.data == "done")
-def done(c):
-    user_id = c.from_user.id
-    if user_id not in user_data or not user_data[user_id].get("media"):
-        bot.send_message(c.message.chat.id, "❌ 请至少发送一张图片或视频！")
-        return
-
-    data = user_data[user_id]
-    declaration = data.get("declaration", "未填写宣言")
-
-    try:
-        group_media = []
-        info = (
-            f"📥 新投稿\n"
-            f"匿名：{'是' if data.get('anon') else '否'}\n"
-            f"性别：{data.get('gender', '未填')}\n"
-            f"年龄：{data.get('age', '未填')}\n"
-            f"属性：{data.get('attr', '未填')}\n"
-            f"地区：{data.get('city', '未填')}\n"
-            f"用户ID：{user_id}\n\n"
-            f"投稿宣言：\n{declaration}"
-        )
-
-        for i, msg in enumerate(data["media"]):
-            if msg.content_type == 'photo':
-                item = types.InputMediaPhoto(msg.photo[-1].file_id)
-            elif msg.content_type == 'video':
-                item = types.InputMediaVideo(msg.video.file_id)
-            else:
-                continue
-            if i == 0:
-                item.caption = info
-            group_media.append(item)
-
-        bot.send_media_group(REVIEW_GROUP_ID, group_media)
-
-        mk = types.InlineKeyboardMarkup()
-        mk.row(
-            types.InlineKeyboardButton("✅ 通过并发布", callback_data=f"ok_{user_id}"),
-            types.InlineKeyboardButton("❌ 拒绝", callback_data=f"no_{user_id}")
-        )
-        bot.send_message(REVIEW_GROUP_ID, "⏳ 新投稿等待审核", reply_markup=mk)
-
-        bot.send_message(c.message.chat.id, "✅ 投稿已提交审核！")
-        del user_data[user_id]
-
-    except Exception as e:
-        bot.send_message(c.message.chat.id, "❌ 提交失败，请重试")
-        print("提交错误:", e)
-
-# ================== 审核 + 发布到目标群 ==================
-@bot.callback_query_handler(func=lambda c: c.data.startswith(("ok_", "no_")))
-def review(c):
-    if c.from_user.id != ADMIN_ID:
-        bot.answer_callback_query(c.id, "❌ 无权限")
-        return
-
-    act, uid_str = c.data.split("_")
-    uid = int(uid_str)
-
-    try:
-        if act == "ok":
-            bot.edit_message_text("✅ 已通过并发布", c.message.chat.id, c.message.message_id)
-            bot.send_message(uid, "🎉 恭喜！你的投稿已通过审核并发布！")
-
-            if TARGET_CHANNEL_ID:
-                bot.forward_message(
-                    chat_id=TARGET_CHANNEL_ID,
-                    from_chat_id=REVIEW_GROUP_ID,
-                    message_id=c.message.message_id - 1   # 媒体组通常在按钮消息前一条
-                )
-                print(f"✅ 投稿已发布到目标群 {TARGET_CHANNEL_ID}")
-            else:
-                bot.send_message(REVIEW_GROUP_ID, "⚠️ 目标群未设置！请用 /settings 设置或在 Railway 添加环境变量 TARGET_CHANNEL_ID")
+    # 处理添加管理员
+    if cid in wait_add_admin:
+        if text in admins:
+            bot.send_message(message.chat.id, "❌ 该用户已是管理员")
         else:
-            bot.edit_message_text("❌ 已拒绝", c.message.chat.id, c.message.message_id)
-            bot.send_message(uid, "😔 很遗憾，你的投稿未通过审核。")
-    except Exception as e:
-        print("发布错误:", e)
-        bot.send_message(ADMIN_ID, f"⚠️ 发布失败：{str(e)}")
+            admins.append(text)
+            save_admins(admins)
+            bot.send_message(message.chat.id, f"✅ 已添加管理员：{text}")
+        del wait_add_admin[cid]
+        return
 
-# ================== 取消 ==================
-@bot.message_handler(commands=['cancel'])
-def cancel(message):
-    user_id = message.from_user.id
-    if user_id in user_data:
-        del user_data[user_id]
-    bot.send_message(message.chat.id, "✅ 已取消当前操作。")
+    # 处理移除管理员
+    if cid in wait_remove_admin:
+        if text not in admins:
+            bot.send_message(message.chat.id, "❌ 该用户不是管理员")
+        elif text == "72406269073":
+            bot.send_message(message.chat.id, "❌ 不能移除主管理员")
+        else:
+            admins.remove(text)
+            save_admins(admins)
+            bot.send_message(message.chat.id, f"✅ 已移除管理员：{text}")
+        del wait_remove_admin[cid]
+        return
 
-# ================== 启动 ==================
-def run_bot():
-    while True:
-        try:
-            print("🤖 机器人运行中... 发送 /settings 管理目标群")
-            bot.polling(non_stop=True, interval=0, timeout=30)
-        except Exception as e:
-            print("Polling 异常，重启中...", e)
-            time.sleep(8)
+    # 处理查询手机号
+    if cid in wait_query_phone:
+        orders = load_orders()
+        result = [order for order in orders.values() if order["phone"] == text]
+        if not result:
+            bot.send_message(message.chat.id, "❌ 未找到该手机号的订单")
+        else:
+            for order in result:
+                kb = InlineKeyboardMarkup(row_width=2)
+                kb.add(
+                    InlineKeyboardButton("✅ 标记完成", callback_data=f"done_{order['id']}"),
+                    InlineKeyboardButton("🗑️ 删除", callback_data=f"del_{order['id']}")
+                )
+                bot.send_message(
+                    message.chat.id,
+                    f"📦 订单号：{order['id']}\n📞 手机号：{order['phone']}\n💰 金额：{order['amount']}\n⏰ 时间：{order['time']}\n状态：{order['status']}",
+                    reply_markup=kb
+                )
+        del wait_query_phone[cid]
+        return
 
+    # 处理提交订单（格式：订单号 手机号 金额）
+    parts = text.split()
+    if len(parts) == 3:
+        order_id, phone, amount = parts
+        orders = load_orders()
+        orders[order_id] = {
+            "id": order_id,
+            "phone": phone,
+            "amount": amount,
+            "time": beijing_time(),
+            "status": "待处理"
+        }
+        save_orders(orders)
+        bot.send_message(message.chat.id, f"✅ 订单提交成功！\n订单号：{order_id}")
+    else:
+        bot.send_message(message.chat.id, "❌ 格式错误！请使用：订单号 手机号 金额（一行一条）")
+
+# 处理按钮回调
+@bot.callback_query_handler(func=lambda call: True)
+def callback(call):
+    cid = str(call.message.chat.id)
+    admins = load_admins()
+    if cid not in admins:
+        bot.answer_callback_query(call.id, "❌ 你没有管理员权限")
+        return
+
+    # 主菜单按钮
+    if call.data == "submit":
+        bot.edit_message_text(
+            "📥 请发送订单，格式：订单号 手机号 金额（一行一条）",
+            chat_id=call.message.chat.id,
+            message_id=call.message.message_id
+        )
+    elif call.data == "query":
+        wait_query_phone[cid] = True
+        bot.edit_message_text(
+            "🔍 请输入要查询的手机号",
+            chat_id=call.message.chat.id,
+            message_id=call.message.message_id
+        )
+    elif call.data == "all":
+        orders = load_orders()
+        if not orders:
+            bot.edit_message_text(
+                "📋 暂无订单",
+                chat_id=call.message.chat.id,
+                message_id=call.message.message_id
+            )
+            return
+        for order in orders.values():
+            kb = InlineKeyboardMarkup(row_width=2)
+            kb.add(
+                InlineKeyboardButton("✅ 标记完成", callback_data=f"done_{order['id']}"),
+                InlineKeyboardButton("🗑️ 删除", callback_data=f"del_{order['id']}")
+            )
+            bot.send_message(
+                call.message.chat.id,
+                f"📦 订单号：{order['id']}\n📞 手机号：{order['phone']}\n💰 金额：{order['amount']}\n⏰ 时间：{order['time']}\n状态：{order['status']}",
+                reply_markup=kb
+            )
+        bot.delete_message(call.message.chat.id, call.message.message_id)
+    elif call.data == "manage":
+        orders = load_orders()
+        if not orders:
+            bot.edit_message_text(
+                "⚙️ 暂无订单可管理",
+                chat_id=call.message.chat.id,
+                message_id=call.message.message_id
+            )
+            return
+        for order in orders.values():
+            kb = InlineKeyboardMarkup(row_width=2)
+            kb.add(
+                InlineKeyboardButton("✅ 标记完成", callback_data=f"done_{order['id']}"),
+                InlineKeyboardButton("🗑️ 删除", callback_data=f"del_{order['id']}")
+            )
+            bot.send_message(
+                call.message.chat.id,
+                f"📦 订单号：{order['id']}\n📞 手机号：{order['phone']}\n💰 金额：{order['amount']}\n⏰ 时间：{order['time']}\n状态：{order['status']}",
+                reply_markup=kb
+            )
+        bot.delete_message(call.message.chat.id, call.message.message_id)
+    # 订单操作按钮
+    elif call.data.startswith("done_"):
+        order_id = call.data.split("_")[1]
+        orders = load_orders()
+        if order_id in orders:
+            orders[order_id]["status"] = "已完成"
+            save_orders(orders)
+            bot.edit_message_text(
+                f"📦 订单号：{orders[order_id]['id']}\n📞 手机号：{orders[order_id]['phone']}\n💰 金额：{orders[order_id]['amount']}\n⏰ 时间：{orders[order_id]['time']}\n状态：{orders[order_id]['status']}",
+                chat_id=call.message.chat.id,
+                message_id=call.message.message_id
+            )
+            bot.answer_callback_query(call.id, "✅ 已标记完成")
+    elif call.data.startswith("del_"):
+        order_id = call.data.split("_")[1]
+        orders = load_orders()
+        if order_id in orders:
+            del orders[order_id]
+            save_orders(orders)
+            bot.delete_message(call.message.chat.id, call.message.message_id)
+            bot.answer_callback_query(call.id, "🗑️ 已删除订单")
+
+# 启动机器人
 if __name__ == "__main__":
-    Thread(target=run_web, daemon=True).start()
-    time.sleep(2)
-    run_bot()
+    print("机器人启动成功，7×24小时在线运行...")
+    bot.infinity_polling()
